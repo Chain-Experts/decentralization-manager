@@ -39,6 +39,7 @@ import { useSnackbar } from "./contexts";
 import { API_BASE, ADMIN_ACCESS } from "./constants";
 import { authenticatedFetch, pingLatency } from "./api";
 import { useHiddenParties } from "./useHiddenParties";
+import { TAB_HASHES, buildHash, parseHash } from "./hashRoute";
 import { workflowKindLabel } from "./workflowSteps";
 import { columnSx } from "./styles";
 import type {
@@ -61,33 +62,12 @@ import type {
 /// than reading a party's whole proposal set at once.
 const ACTIONS_BATCH = 25;
 
-const TAB_HASHES = ["parties", "packages", "config", "notifications"] as const;
-
 // Saved in index.html <script> before any modules load.
 // Strip Keycloak OAuth params that get appended to the hash during check-sso.
 const SAVED_HASH = (
   (window as { __INITIAL_HASH__?: string }).__INITIAL_HASH__ ?? ""
 ).replace(/[&?#](state|session_state|iss|code)=.*/i, "");
 const INITIAL_ROUTE = parseHash(SAVED_HASH);
-
-function parseHash(hash: string): {
-  tab: number;
-  partySlug: string | null;
-} {
-  const raw = hash.replace(/^#\/?/, "");
-  const [section, ...rest] = raw.split("/");
-  const slug = rest.join("/") || null;
-
-  const tabIndex = TAB_HASHES.indexOf(
-    section as (typeof TAB_HASHES)[number],
-  );
-  return { tab: tabIndex >= 0 ? tabIndex : 0, partySlug: tabIndex === 0 ? slug : null };
-}
-
-function buildHash(tab: number, partySlug?: string | null): string {
-  const section = TAB_HASHES[tab] ?? "parties";
-  return partySlug ? `#${section}/${partySlug}` : `#${section}`;
-}
 
 /**
  * Wrap a refresh so a tick is skipped while the previous one is still running.
@@ -176,6 +156,13 @@ const App = () => {
   const [packagesRefreshNonce, setPackagesRefreshNonce] = useState(0);
   const [operatorParty, setOperatorParty] = useState("");
   const [selectedPartyId, setSelectedPartyId] = useState<string | null>(null);
+  const [packagesPartyId, setPackagesPartyId] = useState<string | null>(
+    INITIAL_ROUTE.packagesPartyId,
+  );
+  // The party the packages tab was opened for, when the parties list does not
+  // hold it: a deep link loads the packages tab without reading any parties.
+  const [fetchedPackagesParty, setFetchedPackagesParty] =
+    useState<DecentralizedParty | null>(null);
   const [showSearchBar, setShowSearchBar] = useState(true);
   const [showHidden, setShowHidden] = useState(false);
   const { toggle: toggleHidden, isHidden } = useHiddenParties();
@@ -201,6 +188,7 @@ const App = () => {
     (tab: number, partySlug?: string | null) => {
       setActiveTab(tab);
       if (tab !== 0) setSelectedPartyId(null);
+      setPackagesPartyId(tab === 1 ? (partySlug ?? null) : null);
       window.history.pushState(null, "", buildHash(tab, partySlug));
     },
     [],
@@ -211,6 +199,34 @@ const App = () => {
   const goToNotifications = useCallback(() => {
     navigate(TAB_HASHES.indexOf("notifications"));
   }, [navigate]);
+
+  const packagesParty = useMemo(() => {
+    if (!packagesPartyId) return null;
+    const listed = parties.find((p) => p.party_id === packagesPartyId);
+    if (listed) return listed;
+    return fetchedPackagesParty?.party_id === packagesPartyId
+      ? fetchedPackagesParty
+      : null;
+  }, [packagesPartyId, parties, fetchedPackagesParty]);
+
+  useEffect(() => {
+    if (!packagesPartyId || packagesParty) return;
+    let cancelled = false;
+    const prefix = packagesPartyId.split("::")[0];
+    authenticatedFetch(
+      `${API_BASE}/decentralized-parties?prefix=${encodeURIComponent(prefix)}`,
+    )
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: DecentralizedPartiesResponse | null) => {
+        if (cancelled) return;
+        const found = data?.parties.find((p) => p.party_id === packagesPartyId);
+        if (found) setFetchedPackagesParty(found);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [packagesPartyId, packagesParty]);
 
   // Once parties are loaded, resolve pending slug → exact match opens detail
   useEffect(() => {
@@ -226,8 +242,11 @@ const App = () => {
   // Listen for back/forward browser navigation
   useEffect(() => {
     const onPopState = () => {
-      const { tab, partySlug } = parseHash(window.location.hash);
+      const { tab, partySlug, packagesPartyId } = parseHash(
+        window.location.hash,
+      );
       setActiveTab(tab);
+      setPackagesPartyId(packagesPartyId);
       if (tab === 0) {
         const exactMatch = parties.find((p) => p.party_id === partySlug);
         if (exactMatch) {
@@ -1055,6 +1074,7 @@ const App = () => {
               onAuthRefresh={refreshAuthStatus}
               operatorParty={operatorParty}
               network={nodeConfig?.canton.network}
+              onCheckDars={() => navigate(1, selectedPartyId)}
             />
           ) : (
             <>
@@ -1188,6 +1208,9 @@ const App = () => {
             onUploadDars={() => setUploadDarsDialogOpen(true)}
             onDistributeDars={() => setDarsDialogOpen(true)}
             refreshNonce={packagesRefreshNonce}
+            selfParticipantId={nodeConfig?.node.participant_id}
+            party={packagesParty}
+            onClearParty={() => navigate(1)}
           />
         </Box>
       )}

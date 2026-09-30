@@ -27,6 +27,7 @@ import PersonRemoveIcon from "@mui/icons-material/PersonRemove";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import RefreshIcon from "@mui/icons-material/Refresh";
+import CompareArrowsIcon from "@mui/icons-material/CompareArrows";
 import { CopyableText } from "./CopyableText";
 import { PaginationControls } from "./Pagination";
 import { usePagination } from "../usePagination";
@@ -218,6 +219,8 @@ interface PartyDetailProps {
   onAuthRefresh?: () => void;
   operatorParty?: string;
   network?: Network;
+  /// Open the packages tab, comparing this party's hosting participants.
+  onCheckDars?: () => void;
 }
 
 export const PartyDetail = ({
@@ -230,6 +233,7 @@ export const PartyDetail = ({
   onAuthRefresh,
   operatorParty,
   network,
+  onCheckDars,
 }: PartyDetailProps) => {
   const [kickDialogOpen, setKickDialogOpen] = useState(false);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
@@ -395,6 +399,13 @@ export const PartyDetail = ({
           setEditGovContractId(rulesContract.contract_id);
         },
       },
+    onCheckDars && {
+      key: "check-dars",
+      icon: <CompareArrowsIcon fontSize="small" />,
+      label: "Check DARs",
+      disabled: false,
+      onClick: onCheckDars,
+    },
   ].filter(Boolean) as {
     key: string;
     icon: ReactNode;

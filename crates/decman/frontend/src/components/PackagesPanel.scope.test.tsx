@@ -1,0 +1,158 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { authenticatedFetch } from "../api";
+import { buildHash, parseHash, TAB_HASHES } from "../hashRoute";
+import { PackagesPanel } from "./PackagesPanel";
+import type { DecentralizedParty, PeerPackageComparison } from "../types";
+
+vi.mock("../api", () => ({ authenticatedFetch: vi.fn() }));
+
+const ns = "a".repeat(68);
+const self = `self::${ns}`;
+const hostB = `host-b::${ns}`;
+const hostC = `host-c::${ns}`;
+
+const party: DecentralizedParty = {
+  party_id: `alpha::${ns}`,
+  threshold: 2,
+  owners: [],
+  participants: [self, hostB, hostC].map((participant_uid) => ({
+    participant_uid,
+    permission: "confirmation",
+  })),
+  contracts: [],
+};
+
+const comparison: PeerPackageComparison = {
+  local_packages: [{ package_id: "pkg-a", name: "utility-registry-v0", version: "0.4.0" }],
+  peers: [hostB, hostC].map((participant_id) => ({
+    participant_id,
+    name: "",
+    reachable: true,
+    packages: [],
+  })),
+};
+
+const json = (body: unknown) =>
+  Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+
+const fetchMock = vi.mocked(authenticatedFetch);
+
+beforeEach(() => {
+  fetchMock.mockReset();
+  fetchMock.mockImplementation((input) => {
+    const url = String(input);
+    if (url.startsWith("/packages/compare-peers")) return json(comparison);
+    if (url === "/network-config") {
+      return json({ peers: [{ participant_id: hostB, name: "Operator B" }] });
+    }
+    return json([]);
+  });
+});
+
+const compareCalls = () =>
+  fetchMock.mock.calls
+    .map(([input]) => String(input))
+    .filter((url) => url.startsWith("/packages/compare-peers"));
+
+describe("PackagesPanel opened for a party", () => {
+  it("compares only the party's hosts other than this node", async () => {
+    render(<PackagesPanel party={party} selfParticipantId={self} />);
+
+    await waitFor(() => expect(compareCalls()).toHaveLength(1));
+    const params = new URL(compareCalls()[0], "http://x").searchParams;
+    expect(params.get("participants")).toBe(`${hostB},${hostC}`);
+  });
+
+  it("shows the selected hosts, named where a peer row exists", async () => {
+    render(<PackagesPanel party={party} selfParticipantId={self} />);
+
+    expect(await screen.findByText("Operator B")).toBeTruthy();
+    expect(screen.getByText("host-c")).toBeTruthy();
+    expect(screen.queryByText("self")).toBeNull();
+    expect(screen.getByTestId("party-scope-chip").textContent).toContain("alpha");
+  });
+
+  it("does not compare on its own without a party", async () => {
+    render(<PackagesPanel selfParticipantId={self} />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(compareCalls()).toHaveLength(0);
+  });
+});
+
+describe("PackagesPanel party refresh", () => {
+  it("keeps the comparison when the parties poll hands over a new object", async () => {
+    const { rerender } = render(<PackagesPanel party={party} selfParticipantId={self} />);
+    await waitFor(() => expect(compareCalls()).toHaveLength(1));
+
+    rerender(<PackagesPanel party={{ ...party }} selfParticipantId={self} />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(compareCalls()).toHaveLength(1);
+  });
+});
+
+const PACKAGES_TAB = TAB_HASHES.indexOf("packages");
+
+/** The packages tab as App wires it: the party comes from the fragment. */
+const PackagesRoute = () => {
+  const [partyId, setPartyId] = useState(
+    () => parseHash(window.location.hash).packagesPartyId,
+  );
+  return (
+    <PackagesPanel
+      party={partyId === party.party_id ? party : null}
+      selfParticipantId={self}
+      onClearParty={() => {
+        setPartyId(null);
+        window.history.pushState(null, "", buildHash(PACKAGES_TAB));
+      }}
+    />
+  );
+};
+
+const removeSelected = (label: string) => {
+  const del = screen
+    .getByText(label)
+    .closest(".MuiChip-root")
+    ?.querySelector(".MuiChip-deleteIcon");
+  if (!del) throw new Error(`no selected chip for ${label}`);
+  fireEvent.click(del);
+};
+
+describe("PackagesPanel selection edit", () => {
+  beforeEach(() => {
+    window.history.replaceState(null, "", buildHash(PACKAGES_TAB, party.party_id));
+  });
+
+  it("clears the party chip once the selection is not the party's hosts", async () => {
+    render(<PackagesRoute />);
+    await waitFor(() => expect(compareCalls()).toHaveLength(1));
+    expect(screen.getByTestId("party-scope-chip")).toBeTruthy();
+
+    removeSelected("host-c");
+
+    expect(screen.queryByTestId("party-scope-chip")).toBeNull();
+    expect(screen.getByText("Operator B")).toBeTruthy();
+    expect(window.location.hash).toBe(buildHash(PACKAGES_TAB));
+  });
+
+  it("does not restore the party's hosts on a reload after an edit", async () => {
+    const first = render(<PackagesRoute />);
+    await waitFor(() => expect(compareCalls()).toHaveLength(1));
+    removeSelected("host-c");
+    first.unmount();
+    fetchMock.mockClear();
+
+    render(<PackagesRoute />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(compareCalls()).toHaveLength(0);
+    expect(screen.queryByTestId("party-scope-chip")).toBeNull();
+    expect(screen.queryByText("Operator B")).toBeNull();
+    expect(screen.queryByText("host-c")).toBeNull();
+  });
+});
