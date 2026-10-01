@@ -34,6 +34,7 @@ import {
 } from "../constants";
 import { authenticatedFetch } from "../api";
 import { getActionTypeOptions } from "../governanceFormat";
+import { beneficiariesProblem, beneficiaryWeightSum } from "../rewardBeneficiaries";
 import { fieldHelpAdornment, TextHelp } from "./FieldHelp";
 import type {
   GovernanceResponse,
@@ -1719,6 +1720,13 @@ export const GovernanceSection = ({
     setProposalOffboardRows([]);
   };
 
+  // A beneficiary list the template would reject: submitting it would only
+  // fail after the committee voted, so the form refuses it up front.
+  const beneficiaryProblem =
+    proposalType === "set_provider_app_reward_beneficiaries"
+      ? beneficiariesProblem(proposalBeneficiaries, proposalClearBeneficiaries)
+      : null;
+
   const handleSubmitProposal = async () => {
     if (!rulesContractId) return;
     setProposalLoading(true);
@@ -1811,18 +1819,13 @@ export const GovernanceSection = ({
           };
           break;
         case "set_provider_app_reward_beneficiaries": {
+          if (beneficiaryProblem) throw new Error(beneficiaryProblem);
           let beneficiaries: AppRewardBeneficiary[] | null = null;
           if (!proposalClearBeneficiaries) {
-            beneficiaries = proposalBeneficiaries.map((b, idx) => {
-              const party = b.beneficiary.trim();
-              const weight = b.weight.trim();
-              if (!party || !weight) {
-                throw new Error(
-                  `Beneficiary row ${idx + 1}: party and weight are required`,
-                );
-              }
-              return { beneficiary: party, weight };
-            });
+            beneficiaries = proposalBeneficiaries.map((b) => ({
+              beneficiary: b.beneficiary.trim(),
+              weight: b.weight.trim(),
+            }));
           }
           proposal = {
             type: "set_provider_app_reward_beneficiaries",
@@ -4094,26 +4097,26 @@ export const GovernanceSection = ({
                         >
                           Add Beneficiary
                         </Button>
-                        {proposalBeneficiaries.length > 0 &&
-                          (() => {
-                            const sum = proposalBeneficiaries.reduce(
-                              (acc, b) => acc + (parseFloat(b.weight) || 0),
-                              0,
-                            );
-                            const isValid = Math.abs(sum - 1.0) < 1e-9;
-                            return (
-                              <Typography
-                                variant="caption"
-                                color={
-                                  isValid ? "success.main" : "error.main"
-                                }
-                              >
-                                Sum: {sum.toFixed(4)}{" "}
-                                {isValid ? "" : "(must be 1.0)"}
-                              </Typography>
-                            );
-                          })()}
+                        {(() => {
+                          // Just the running total: what is wrong with the
+                          // rows is the alert's job.
+                          const sum = beneficiaryWeightSum(proposalBeneficiaries);
+                          if (proposalBeneficiaries.length === 0 || sum === null) return null;
+                          return (
+                            <Typography
+                              variant="caption"
+                              color={sum === "1" ? "success.main" : "text.secondary"}
+                            >
+                              Sum: {sum}
+                            </Typography>
+                          );
+                        })()}
                       </Box>
+                      {beneficiaryProblem && (
+                        <Typography variant="caption" color="error.main" role="alert">
+                          {beneficiaryProblem}
+                        </Typography>
+                      )}
                     </>
                   )}
                 </>
@@ -5230,7 +5233,8 @@ export const GovernanceSection = ({
                     onClick={handleSubmitProposal}
                     disabled={
                       proposalLoading ||
-                      proposalType === "offer_paid_credential"
+                      proposalType === "offer_paid_credential" ||
+                      beneficiaryProblem !== null
                     }
                     startIcon={
                       proposalLoading ? (
@@ -5248,7 +5252,8 @@ export const GovernanceSection = ({
                     onClick={handleSubmitProposal}
                     disabled={
                       proposalLoading ||
-                      proposalType === "offer_paid_credential"
+                      proposalType === "offer_paid_credential" ||
+                      beneficiaryProblem !== null
                     }
                     startIcon={
                       proposalLoading ? <CircularProgress size={16} /> : undefined
