@@ -43,7 +43,6 @@
 
 use anyhow::Context;
 use canton_proto_rs::com::digitalasset::canton::{
-    crypto::v30::{Signature, SignatureFormat, SigningAlgorithmSpec},
     protocol::v30::{
         PartyToParticipant, SignedTopologyTransaction, TopologyMapping, TopologyTransaction,
         enums::{ParticipantPermission, TopologyChangeOp},
@@ -71,7 +70,7 @@ use crate::{
     error::Result,
     utils,
     workflow::{
-        external_party::steps::party_query,
+        external_party::{keys::PartySignatureScheme, steps::party_query},
         party_replication::{
             ArtifactStore, ReplicationArtifacts, ReplicationTarget, capture_offset_once,
         },
@@ -144,9 +143,6 @@ pub fn replication_target(
         ArtifactStore::Tenant,
     ))
 }
-
-/// Length of a concatenated Ed25519 signature, which is what this path submits.
-const ED25519_SIGNATURE_LEN: usize = 64;
 
 /// Why an add-hosts call could not proceed.
 ///
@@ -764,16 +760,17 @@ pub fn validate_add_hosts_topology(
             party = bundle.party_id
         );
     }
-    // These go to Canton labelled as concatenated Ed25519, which is always 64
-    // bytes. Base64 decoding accepts any length, so without this an empty or
+    // Base64 decoding accepts any length, so without this an empty or
     // truncated signature passes validation and fails inside a Canton RPC
-    // instead, surfacing as a 500 for what is plainly malformed input.
+    // instead, surfacing as a 500 for what is plainly malformed input. The
+    // forms depend on the party key's type, read off the mapping.
+    let scheme = PartySignatureScheme::for_party(&current.mapping, &bundle.signed_by);
     for (index, signature) in bundle.signatures.iter().enumerate() {
-        if signature.len() != ED25519_SIGNATURE_LEN {
+        if !scheme.accepts(signature) {
             anyhow::bail!(
-                "signature {index} is {len} byte(s); a concatenated Ed25519 signature is always \
-                 {ED25519_SIGNATURE_LEN}",
-                len = signature.len()
+                "signature {index} is {len} byte(s); {expected}",
+                len = signature.len(),
+                expected = scheme.expected_form()
             );
         }
     }
@@ -1101,19 +1098,14 @@ pub async fn submit_add_hosts(
         .map_err(AddHostsError::Canton)?;
     let store = topology::synchronizer_store_id(&synchronizer_id);
 
+    let scheme = PartySignatureScheme::for_party(&current.mapping, &bundle.signed_by);
     let signed: Vec<SignedTopologyTransaction> = bundle
         .topology_transactions
         .iter()
         .zip(&bundle.signatures)
         .map(|(transaction, signature)| SignedTopologyTransaction {
             transaction: transaction.clone(),
-            signatures: vec![Signature {
-                format: SignatureFormat::Concat as i32,
-                signature: signature.clone(),
-                signed_by: bundle.signed_by.clone(),
-                signing_algorithm_spec: SigningAlgorithmSpec::Ed25519 as i32,
-                signature_delegation: None,
-            }],
+            signatures: vec![scheme.canton_signature(signature, &bundle.signed_by)],
             proposal: true,
             multi_transaction_signatures: vec![],
         })
@@ -1869,6 +1861,62 @@ mod tests {
                 "{e}"
             );
         }
+    }
+
+    /// The length rule follows the party key. A secp256k1 party may sign in
+    /// DER, which is seldom 64 bytes, and the mapping is what says so.
+    #[test]
+    fn accepts_a_der_signature_for_a_secp256k1_party() {
+        let key = SigningPublicKey {
+            format: CryptoKeyFormat::DerX509SubjectPublicKeyInfo as i32,
+            public_key: vec![9u8; 88],
+            key_spec: SigningKeySpec::EcSecp256k1 as i32,
+            usage: vec![
+                SigningKeyUsage::Namespace as i32,
+                SigningKeyUsage::Protocol as i32,
+            ],
+            ..Default::default()
+        };
+        let fingerprint = crate::utils::compute_fingerprint(&key);
+        let party = format!("alice::{fingerprint}");
+        let current = CurrentPartyTopology {
+            serial: 4,
+            mapping: PartyToParticipant {
+                party: party.clone(),
+                threshold: 1,
+                participants: vec![
+                    host(1, ParticipantPermission::Confirmation, false),
+                    host(2, ParticipantPermission::Confirmation, false),
+                ],
+                party_signing_keys: Some(SigningKeysWithThreshold {
+                    keys: vec![key],
+                    threshold: 1,
+                }),
+            },
+        };
+        let mapping = match add_hosts_mapping(
+            &current.mapping,
+            &[participant(3)],
+            HostPermission::Confirmation,
+        ) {
+            Ok(m) => m,
+            Err(e) => panic!("{e}"),
+        };
+        let mut der = vec![0x30, 0x45, 0x02, 0x21, 0x00];
+        der.extend([0x80; 32]);
+        der.extend([0x02, 0x20]);
+        der.extend([0x7f; 32]);
+        let bundle = ExternalPartyAddHostsPayload {
+            party_id: party,
+            base_serial: 4,
+            topology_transactions: vec![serialize(mapping, 5)],
+            signatures: vec![der],
+            signed_by: fingerprint,
+        };
+
+        let result = validate_add_hosts_topology(&test_config(3), &current, &bundle);
+
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]

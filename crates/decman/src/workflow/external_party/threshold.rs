@@ -13,7 +13,6 @@
 
 use anyhow::Context;
 use canton_proto_rs::com::digitalasset::canton::{
-    crypto::v30::{Signature, SignatureFormat, SigningAlgorithmSpec},
     protocol::v30::{
         PartyToParticipant, SignedTopologyTransaction, TopologyMapping, TopologyTransaction,
         enums::{ParticipantPermission, TopologyChangeOp},
@@ -33,8 +32,12 @@ use crate::{
     config::NodeConfig,
     utils,
     workflow::{
-        external_party::add_hosts::{
-            AddHostsError, CurrentPartyTopology, owns_party_namespace, read_party_to_participant,
+        external_party::{
+            add_hosts::{
+                AddHostsError, CurrentPartyTopology, owns_party_namespace,
+                read_party_to_participant,
+            },
+            keys::PartySignatureScheme,
         },
         topology,
     },
@@ -345,6 +348,16 @@ pub fn validate_threshold_topology(
             s = bundle.signatures.len()
         );
     }
+    let scheme = PartySignatureScheme::for_party(&current.mapping, &bundle.signed_by);
+    for (index, signature) in bundle.signatures.iter().enumerate() {
+        if !scheme.accepts(signature) {
+            anyhow::bail!(
+                "signature {index} is {len} byte(s); {expected}",
+                len = signature.len(),
+                expected = scheme.expected_form()
+            );
+        }
+    }
     let next_serial = current.serial.checked_add(1).with_context(|| {
         format!(
             "{party} is at serial {s}, which cannot be advanced",
@@ -456,19 +469,14 @@ pub async fn submit_threshold(
         .map_err(AddHostsError::Canton)?;
     let store = topology::synchronizer_store_id(&synchronizer_id);
 
+    let scheme = PartySignatureScheme::for_party(&current.mapping, &bundle.signed_by);
     let signed: Vec<SignedTopologyTransaction> = bundle
         .topology_transactions
         .iter()
         .zip(&bundle.signatures)
         .map(|(transaction, signature)| SignedTopologyTransaction {
             transaction: transaction.clone(),
-            signatures: vec![Signature {
-                format: SignatureFormat::Concat as i32,
-                signature: signature.clone(),
-                signed_by: bundle.signed_by.clone(),
-                signing_algorithm_spec: SigningAlgorithmSpec::Ed25519 as i32,
-                signature_delegation: None,
-            }],
+            signatures: vec![scheme.canton_signature(signature, &bundle.signed_by)],
             // A threshold change needs the party namespace alone, so the
             // party's signature is the complete authorization — no host has to
             // add one, and this is not a proposal awaiting others.
