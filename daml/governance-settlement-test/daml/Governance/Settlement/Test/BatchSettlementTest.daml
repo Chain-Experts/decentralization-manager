@@ -1,0 +1,189 @@
+-- | The generic module on its own: a Token Standard V2 batch settlement
+-- with no application-specific code in it, governed by BitSafe's rules.
+-- Three receivers, a proposer who is the batch's executor, and a
+-- decentralised party named as the other executor. Below threshold nothing
+-- executes; the proposer alone cannot settle; at threshold the batch settles.
+--
+-- Self-contained: the cash fixtures (a TestTokenV2 registry, minting,
+-- balances) are in Governance.Settlement.TestUtils beside this file, so the
+-- package depends on the governance layer and the Token Standard and on
+-- nothing else.
+module Governance.Settlement.Test.BatchSettlementTest where
+
+import DA.Assert ((===))
+import DA.Foldable (forA_)
+import DA.Set qualified as Set
+import DA.Text qualified as T
+import DA.Time (hours)
+
+import Daml.Script
+
+import Governance.Action
+import Governance.Confirmation
+import Governance.ExecutionResult
+import Governance.Rules
+import Governance.Settlement.BatchSettlement
+import Splice.Api.Token.MetadataV1 (emptyMetadata)
+import Splice.Api.Token.AllocationV2 qualified as V2
+import Splice.Api.Token.AllocationInstructionV2 qualified as V2
+import Splice.TokenStandard.Utils (basicAccount)
+import Splice.Testing.Tokens.TestTokenV2.Holding qualified as TestTokenV2
+
+import Governance.Settlement.TestUtils
+
+data Batch = Batch
+  with
+    cash           : Cash
+    proposer       : Party
+    dp             : Party
+    members        : [Party]
+    rulesCid       : ContractId GovernanceRules
+    receivers      : [Party]
+    settlement     : V2.SettlementInfo
+    transferLegs   : [V2.TransferLeg]
+    allocationCids : [ContractId V2.Allocation]
+    proposalCid    : ContractId BatchSettlementProposal
+    actionCid      : ContractId GovernableAction
+
+-- | A batch of three legs, allocated on both sides, proposed.
+proposeBatch : Script Batch
+proposeBatch = do
+  (_, cash) <- setupCash
+  proposer <- allocateParty "Proposer"
+  receivers <- forA ["Receiver1", "Receiver2", "Receiver3"] allocateParty
+  dp <- allocateParty "Approvers"
+  members <- forA ["Member1", "Member2", "Member3"] allocateParty
+  rulesCid <- submit dp $ createCmd GovernanceRules with
+    governanceParty = dp
+    members = Set.fromList members
+    threshold = 2
+    actionConfirmationTimeout = hours 1
+    additionalProposers = Some (Set.fromList [proposer])
+  fund cash proposer 10000.0
+
+  let settlement = V2.SettlementInfo with
+        executors = [proposer, dp]
+        id = "BATCH-1"
+        cid = None
+        meta = emptyMetadata
+      leg i receiver amount = V2.TransferLeg with
+        transferLegId = "leg-" <> show i
+        sender = basicAccount proposer
+        receiver = basicAccount receiver
+        amount
+        instrumentId = cash.instrument.id
+        meta = emptyMetadata
+      transferLegs = zipWith3 leg [1, 2, 3] receivers [100.0, 200.0, 300.0]
+
+  -- The proposer's side, funded and committed.
+  now <- requestedAt
+  inputHoldingCids <- unlockedHoldingCids cash proposer
+  sendResult <- submit (actAs proposer <> disclose cash.rules) $
+    exerciseCmd (toInterfaceContractId @V2.AllocationFactory cash.rulesCid)
+      V2.AllocationFactory_Allocate with
+        settlement
+        allocation = sendAllocationSpec cash.instrument (basicAccount proposer) transferLegs
+        requestedAt = now
+        inputHoldingCids
+        extraArgs = cash.extraArgs
+        actors = [proposer]
+  sendCid <- case sendResult.output of
+    V2.AllocationInstructionResult_Completed cid -> pure cid
+    _ -> fail "send allocation did not complete"
+
+  -- Each receiver's side, by the receiver itself.
+  receiptCids <- forA receivers $ \r -> do
+    let mine = [ l | l <- transferLegs, l.receiver == basicAccount r ]
+    result <- submit (actAs r <> disclose cash.rules) $
+      exerciseCmd (toInterfaceContractId @V2.AllocationFactory cash.rulesCid)
+        V2.AllocationFactory_Allocate with
+          settlement
+          allocation = receiptAllocationSpec cash.instrument (basicAccount r) mine
+          requestedAt = now
+          inputHoldingCids = []
+          extraArgs = cash.extraArgs
+          actors = [r]
+    case result.output of
+      V2.AllocationInstructionResult_Completed cid -> pure cid
+      _ -> fail "receipt allocation did not complete"
+
+  let allocationCids = sendCid :: receiptCids
+  proposalCid <- submit proposer $ createCmd BatchSettlementProposal with
+    governanceParty = dp
+    proposer
+    factoryCid = toInterfaceContractId cash.rulesCid
+    settlement
+    transferLegs
+    allocationCids
+    extraArgs = cash.extraArgs
+    label = "BatchSettlement"
+    description = "Pay three receivers 600.00 USD in one batch"
+  let actionCid = toInterfaceContractId @GovernableAction proposalCid
+  pure Batch with ..
+
+confirmBatch : Batch -> Party -> Script (ContractId GovernanceConfirmation)
+confirmBatch b member = do
+  r <- submit (actAs member <> readAs b.dp) $
+    exerciseCmd b.rulesCid GovernanceRules_ConfirmAction with
+      confirmer = member
+      actionProposalCid = b.actionCid
+  pure r.confirmationCid
+
+executeBatch : Batch -> Party -> [ContractId GovernanceConfirmation] -> Script (Either SubmitError ExecuteConfirmedActionResult)
+executeBatch b member confirmations = do
+  hs <- holdings b.cash b.proposer
+  locked <- forA [ cid | (cid, v) <- hs, isLocked v ] $ \cid -> do
+    Some d <- queryDisclosure b.proposer (fromInterfaceContractId @TestTokenV2.Token cid)
+    pure d
+  trySubmit (actAs member <> readAs b.dp <> disclose b.cash.rules <> discloseMany locked) $
+    exerciseCmd b.rulesCid GovernanceRules_ExecuteConfirmedAction with
+      executor = member
+      actionProposalCid = b.actionCid
+      confirmations
+  where
+    isLocked v = case v.lock of
+      None -> False
+      Some _ -> True
+
+settlement_belowThresholdRefused : Script ()
+settlement_belowThresholdRefused = do
+  b <- proposeBatch
+  let [m1, m2, _] = b.members
+  c1 <- confirmBatch b m1
+  r <- executeBatch b m2 [c1]
+  case r of
+    Right _ -> fail "executed with one confirmation of three"
+    Left err -> assertMsg ("expected the threshold refusal, got: " <> errorText err)
+      ("Enough confirmations to execute action" `T.isInfixOf` errorText err)
+  forA_ b.receivers $ \r -> balance b.cash r >>= (=== 0.0)
+
+settlement_proposerAloneRefused : Script ()
+settlement_proposerAloneRefused = do
+  b <- proposeBatch
+  r <- trySubmit (actAs b.proposer <> disclose b.cash.rules) $
+    exerciseCmd (toInterfaceContractId @V2.SettlementFactory b.cash.rulesCid)
+      V2.SettlementFactory_SettleBatch with
+        settlement = b.settlement
+        transferLegs = b.transferLegs
+        allocations = [ V2.FinalizedAllocation cid [] None | cid <- b.allocationCids ]
+        actors = [b.proposer]
+        extraArgs = b.cash.extraArgs
+  case r of
+    Right _ -> fail "the proposer settled without the governance party"
+    Left err -> debug ("proposer alone: " <> errorText err)
+  forA_ b.receivers $ \r -> balance b.cash r >>= (=== 0.0)
+
+settlement_atThresholdSettles : Script ()
+settlement_atThresholdSettles = do
+  b <- proposeBatch
+  let [m1, m2, m3] = b.members
+  c1 <- confirmBatch b m1
+  c2 <- confirmBatch b m2
+  r <- executeBatch b m3 [c1, c2]
+  case r of
+    Left err -> fail ("execute at threshold failed: " <> errorText err)
+    Right _ -> pure ()
+  forA_ (zip b.receivers [100.0, 200.0, 300.0]) $ \(r, amount) -> balance b.cash r >>= (=== amount)
+  balance b.cash b.proposer >>= (=== 9400.0)
+  None <- queryContractId b.proposer b.proposalCid
+  pure ()

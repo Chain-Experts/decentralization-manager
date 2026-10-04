@@ -1,0 +1,27 @@
+sdk-version: 3.4.11
+name: governance-settlement-v0
+version: 0.1.0
+source: daml
+# A GovernableAction for a Token Standard V2 batch settlement: a proposer
+# files one, the members confirm to threshold, and executeImpl exercises
+# SettlementFactory_SettleBatch with actors = settlement.executors, which is
+# what the standard requires.
+#
+# Depends on governance-action-v1 and the Splice V2 API only - nothing
+# application-specific - so any team settling a V2 batch can govern it
+# without writing its own proposal template.
+#
+# LF 2.2 because governance-action-v1 is; the Splice V2 DARs are 2.1 and a
+# 2.2 package data-depends on them without trouble.
+dependencies:
+  - daml-prim
+  - daml-stdlib
+data-dependencies:
+  - ../governance-action-v1/.daml/dist/governance-action-v1-0.1.0.dar
+  - ../dars/splice-api-token-metadata-v1-1.0.0.dar
+  - ../dars/splice-api-token-holding-v2-1.0.0.dar
+  - ../dars/splice-api-token-allocation-v2-1.0.0.dar
+build-options:
+  - --target=2.2
+  - --ghc-option=-Wunused-binds
+  - --ghc-option=-Wunused-matches
