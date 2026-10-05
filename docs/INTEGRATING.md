@@ -3,21 +3,31 @@
 [`CUSTOM_DAML_TEMPLATES.md`](CUSTOM_DAML_TEMPLATES.md) covers writing a
 `GovernableAction` and driving it: the package layout, `proposal_cid` and its
 placeholder action, `disclosed_contracts`, granting propose-only rights. It
-assumes Decentralization Manager is already talking to your participant.
+assumes Decentralization Manager is already talking to a participant.
 
 This page is about getting to that point, and about the things that bite
-afterwards. Seven items. Four are configuration on the Canton side, where the
-errors name the vote rather than the config and so read as governance
-faults. Three are operational, and each arrives long after the step that
-caused it.
+afterwards.
 
-Everything here was found by doing it: first against our own
-five-participant Canton, then on DevNet against a party shared with the
-BitSafe team, through to a governed Token Standard V2 settlement.
+> **Items 1 to 4 apply to a local, insecure setup only.** They describe the
+> handshake between Canton's `unsafe-jwt-hmac-256` auth service and the token
+> Decentralization Manager mints for itself in `DECPM_INSECURE` mode; the
+> `DECPM_CANTON_HMAC_*` settings are read only in that mode. **A participant
+> configured this way accepts any token signed with a public secret, so none
+> of it belongs on a real deployment.** For production, configure an identity
+> provider on the participant and point Decentralization Manager at the same
+> issuer — see [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md).
+>
+> Items 5 to 7 apply to any deployment.
 
-## 1. Canton must have authentication enabled — even locally
+Seven items. Four are configuration, where the errors name the vote rather
+than the config and so read as governance faults. Three are operational, and
+each arrives long after the step that caused it.
 
-A node with no `auth-services` at all will fail every vote:
+## 1. Canton must have authentication enabled, even locally
+
+*Insecure setup only.*
+
+A node with no `auth-services` at all fails every vote:
 
 ```text
 INVALID_TOKEN(8): The submitted request is missing a user-id:
@@ -25,15 +35,19 @@ Cannot default user_id field because claims do not specify an user-id.
 Is authentication turned on?
 ```
 
-Onboarding and package distribution still work, because those go through the
-Admin API. It is the first `/governance/confirm` that fails, which makes it
-look like a governance problem rather than a configuration one.
+Onboarding and package distribution still succeed, because those go through
+the Admin API. It is the first `/governance/confirm` that fails, which makes
+it look like a governance problem rather than a configuration one.
 
 A command needs a user id, and Canton takes it from the token's `sub` claim.
-With no auth service there are no claims and nothing to default from. Add, on
-the participant's **`ledger-api`**:
+With no auth service there are no claims and nothing to default from.
+
+**The block below is for a local node only.** A participant carrying it
+accepts any token signed with the public secret `unsafe`, and it must not be
+copied onto a real participant.
 
 ```hocon
+# LOCAL / INSECURE ONLY - accepts any token signed with the secret below.
 ledger-api {
   auth-services = [{
     type = unsafe-jwt-hmac-256
@@ -44,42 +58,53 @@ ledger-api {
 ```
 
 Those are the values `DECPM_CANTON_HMAC_AUDIENCE` and
-`DECPM_CANTON_HMAC_SECRET` default to, so DecMan lines up with no further
-configuration.
+`DECPM_CANTON_HMAC_SECRET` default to, so an insecure-mode Decentralization
+Manager lines up with no further configuration.
 
 ## 2. `auth-services` belongs on `ledger-api`, not `http-ledger-api`
 
-Putting it on the JSON API block too stops Canton booting. Worth saying
-explicitly, because a config file usually lists the two blocks next to each
-other and it is a natural mistake.
+*Insecure setup only.*
 
-## 3. Tokens need `exp`, and Canton caps how far out it may be
+Adding the block to the JSON API section as well stops Canton booting. Worth
+stating explicitly, because a config file usually lists the two sections next
+to each other and it is a natural mistake.
 
-Two different errors, one after the other:
+## 3. Canton needs `max-token-lifetime = Inf`, because the insecure token never expires
+
+*Insecure setup only.*
+
+In insecure mode Decentralization Manager mints its Canton token with `aud`,
+`sub` and `iat` and **no `exp`** (`crates/decman/src/auth/mock.rs`). Canton
+rejects a token with no expiry:
 
 ```text
 Could not verify JWT token: token has no expiration time
+```
+
+Substituting a hand-made token with a distant expiry does not help either:
+
+```text
 Could not verify JWT token: token lifetime (2099-01-01T00:00:00Z) too long
 ```
 
-A demo token that never expires is convenient, and Canton refuses both that and
-a distant expiry. The fix is on the same block:
+One setting covers both, on the same section:
 
 ```hocon
 ledger-api { max-token-lifetime = Inf }
 ```
 
-which is what the Splice LocalNet bundle sets
-(`conf/canton/app.conf`). Then any `exp` is accepted.
+This is what the Splice LocalNet bundle sets (`conf/canton/app.conf`).
 
 ## 4. Use `participant_admin`; do not create a ledger user first
 
+*Insecure setup only.*
+
 With `target-audience` set, Canton reads audience-based tokens and takes the
 user id from `sub` — so **the user must already exist**. Creating one from the
-bootstrap console needs a token the console does not have, so it is a loop.
+bootstrap console needs a token the console does not have, which is a loop.
 
 Canton creates exactly one user for itself, `participant_admin`, with
-`ParticipantAdmin` rights. Name it in the token and the loop disappears:
+`ParticipantAdmin` rights. Naming it in the token removes the loop:
 
 ```text
 DECPM_CANTON_HMAC_SUBJECT=participant_admin
@@ -88,14 +113,15 @@ DECPM_CANTON_HMAC_SUBJECT=participant_admin
 Any party the governance flow acts as still needs `CanActAs` granted to that
 user, as usual.
 
-## 5. Peers need every package your action touches, not just yours
+## 5. Peers need every package the action touches, not only the action's own
 
-Distributing your own DARs to a peer is not enough. Naming a decentralised
-party as an approver makes the peer's participant a stakeholder — and, if the
-party is also an executor, it must validate everything the action does.
+Distributing the action's own DAR to a peer is not enough. Naming a
+decentralised party as an approver makes the peer's participant a stakeholder
+and, where the party is also an executor, it must validate everything the
+action does.
 
-Ours settles a Token Standard V2 batch, so the peer needed the asset packages
-too. Without them:
+An action that settles a Token Standard V2 batch therefore needs the asset
+packages on the peer as well. Without them:
 
 ```text
 UNRESOLVED_PACKAGE_NAME(11): Interpretation error: Update failed due to a
@@ -107,32 +133,32 @@ missing one package fails the whole submission. The error names the package
 but not the node, and it arrives at the settlement rather than at
 distribution — long after the step that caused it.
 
-Worth a line in the DAR-distribution docs: send the transitive set your
-`executeImpl` reaches, not only the package your action is defined in.
+Worth a line in the DAR-distribution docs: send the transitive set that
+`executeImpl` reaches, not only the package the action is defined in.
 
 ## 6. A member with no node can lock the party out of its own rules
 
-The one that cost a day. Adding a governance member is a single dialog, and
-its failure mode is a party that can no longer govern itself.
+Adding a governance member is a single dialog, and its failure mode is a
+party that can no longer govern itself.
 
-We added a party as a member that had no Decentralization Manager of its
-own - it was a leftover application party, added in error. A member that
-cannot confirm still counts towards the threshold. With three members at a
-threshold of three, two confirmations were reachable and three were
-required, so **every** action was stuck, including the remove-member action
-that would have fixed it.
+A party added as a member with no Decentralization Manager of its own still
+counts towards the threshold. With three members at a threshold of three, two
+confirmations were reachable and three were required, so **every** action was
+stuck — including the remove-member action that would have fixed it.
 
-Two things make this sharper than it sounds:
+Two details make this sharper:
 
-- `get_member_party_id` resolves the confirming member from the node's
-  stored credentials, taking the **first** whose `dec_party_id` matches. So
-  one node casts exactly one confirmation, and adding a second credential
-  for the same decentralised party does not give you a second vote.
-- The UI does not let you edit **Member Party ID** once saved.
+- `get_member_party_id` resolves the confirming member from the node's stored
+  credentials, taking the **first** whose `dec_party_id` matches. One node
+  casts exactly one confirmation; adding a second credential for the same
+  decentralised party does not give a second vote.
+- The UI does not allow **Member Party ID** to be edited once saved.
 
-The way out is `PUT /party-config`, which accepts `member_party_id` and
-treats absent credential fields as "keep existing". Point the node at the
-stranded member, confirm, point it back:
+### Recovery, as a last resort
+
+`PUT /party-config` accepts `member_party_id` and treats absent credential
+fields as "keep existing". Pointing a node at the stranded member, confirming,
+and pointing it back will break the deadlock:
 
 ```text
 PUT /party-config   { dec_party_id, member_party_id: <stranded>, user_id, ... }
@@ -140,59 +166,44 @@ POST /governance/confirm
 PUT /party-config   { dec_party_id, member_party_id: <original>, user_id, ... }
 ```
 
-Worth a warning in the add-member dialog: **a member that cannot confirm
-still counts towards the threshold.** Worth a line in the docs too, that
-`PUT /party-config` is the escape hatch when it happens.
+> **This is recovery, not a routine step.** It works only where the node's
+> ledger user can act as the stranded member, and in that case **one operator
+> casts two of the party's confirmations**. That defeats the assumption the
+> threshold encodes — one operator per member — and while the procedure runs,
+> the party's decisions are not what its rules describe. Use it to escape a
+> deadlock, record that it was used, and remove the stranded member
+> immediately afterwards.
 
-## 7. The UI cannot execute an action that needs disclosed contracts
+A warning in the add-member dialog would prevent the situation entirely: **a
+member that cannot confirm still counts towards the threshold.**
 
-`CUSTOM_DAML_TEMPLATES.md` documents `disclosed_contracts` on
-`POST /governance/execute`, and documents it well. What is not said is that
-**the Approvals tab has no way to supply them**. Its Execute button submits
-with none, so a custom `GovernableAction` whose `executeImpl` reaches a
-contract the executing node has not seen fails on the click:
+## 7. The Execute button for custom proposals sends no disclosed contracts
+
+This is specific to custom actions filed with `proposal_cid`. The standard
+execute dialog (`ExecuteDialog.tsx`) does accept disclosed contracts, and
+actions executed through it are unaffected.
+
+For a custom `GovernableAction` whose `executeImpl` reaches a contract the
+executing node has never seen, the Approvals tab's Execute button submits an
+empty `disclosed_contracts` and the click fails:
 
 ```text
 CONTRACT_NOT_FOUND(11): Contract could not be found with id 00bf0947...
 ```
 
-The id in the message is the contract that should have been disclosed - in
-our case the registry's `TokenRules`. Nothing in the error says
-"disclosure", so it reads as a missing contract rather than a missing
+The id in the message is the contract that should have been disclosed — a
+registry's rules contract, for example. Nothing in the error mentions
+disclosure, so it reads as a missing contract rather than a missing
 parameter.
 
-Pasting them in would not help even if the dialog offered it: our two blobs
-are 692 and 1,644 characters, and a settlement with one locked holding per
-sender grows from there.
+Offering a paste field would not be a practical fix: a single blob commonly
+runs to several hundred or several thousand characters, and the number of
+them grows with the action's inputs.
 
-So for an action of this kind, **execute over the API, not from the UI**.
-Worth saying on the Execute button itself, or disabling it for actions whose
-`executeImpl` is known to need a choice context.
+So for a custom proposal of this kind, **execute over
+`POST /governance/execute` rather than from the Approvals tab**. Saying so
+beside the button, or disabling it for actions whose `executeImpl` needs a
+choice context, would save the diagnosis.
 
-The failure is harmless - the proposal and its confirmations survive, and a
+The failure is harmless: the proposal and its confirmations survive, and a
 subsequent API execute succeeds.
-
-## Two worked examples
-
-**Locally, in Docker.** `judge/govern.sh` in
-[Indivisa](https://github.com/Chain-Experts/Indivisa) does items 1 to 4
-against a five-participant Canton: peer mesh, onboarding at threshold 2,
-member parties, governance rules, admitting an additional proposer, then
-propose, confirm, execute. It is a port of `hackathon/seed.sh` and is
-deliberately readable as a reference. It skips DAR distribution, because
-that Canton vets the packages at bootstrap - worth knowing that the step is
-optional when you control the node.
-
-**On DevNet, against a party shared with your team.**
-`infra/bitsafe/govern-devnet.ps1` and its neighbours do the same where the
-second member is somebody else's. Two of them exist only because of items 5
-and 6:
-
-| Script | Why |
-| --- | --- |
-| `verify-packages.ps1` | Asks the ledger which packages resolve for the shared party, rather than trusting a distribution's reported status |
-| `confirm-as-member.ps1` | Casts a confirmation as a member the node is not configured with, via `PUT /party-config` - the escape hatch for item 6 |
-
-A coupon settled through that party on 29 September 2026 at two of two,
-update id
-`1220eb437ef12213805d81db4f425056c1b0fdf2eb4f1de3f1882d037eefbd60c6ac`.
