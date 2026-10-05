@@ -1,119 +1,63 @@
-# `governance-settlement-v0`
+# `governance-settlement-v1`
 
-A Token Standard V2 batch settlement that cannot execute until a
-decentralised party's members have confirmed it to threshold.
+A Token Standard V2 batch settlement as a governable action. The batch
+executes only once a decentralised party's members have confirmed it to
+threshold.
 
-Depends on `governance-action-v1` and the Splice V2 API packages. Nothing
-application-specific: adopt it as it is.
+Depends on `governance-action-v1` and the Splice V2 API packages, and on
+nothing application-specific.
 
-## Who this is for
+## How it works
 
-Any application that moves value to several parties at once and should not
-let one operator release it:
+`SettlementFactory_SettleBatch` is controlled by its actors, and the
+standard's default implementation requires those actors to equal the
+settlement's executors. An application that names a governance party among
+the executors when it allocates has made every settlement of that batch
+require a threshold of that party's members.
 
-- **Paying agents and corporate trustees** — a coupon, a dividend or a
-  redemption paid to every holder in one transaction.
-- **Venues and exchanges** — a trade with fee legs, where the venue is the
-  executor and the counterparties should not depend on it alone.
-- **Treasuries and payroll** — a scheduled run of many payments, released
-  on a committee's authority rather than one person's.
-- **Redemption and paying agents for funds** — same shape, different event.
+`BatchSettlementProposal` carries the batch through the vote. Authority flows
+GovernanceRules to GovernableAction_Execute to executeImpl to
+SettlementFactory_SettleBatch.
 
-If your settlement is a V2 batch and your answer to *"who can release
-this?"* is *"more than one party"*, this is the module.
+## Using it
 
-## What was missing, and why it exists
+1. Allocate both sides of the batch with the governance party and the
+   proposer as the settlement's executors.
+2. File a `BatchSettlementProposal` as the proposer, who must be a member or
+   an additional proposer of the rules contract.
+3. Members confirm to threshold.
+4. Any member executes.
 
-`governance-action-v1` gives you the engine: propose, confirm to threshold,
-execute. What it does not give you is the action. Every application writes
-its own `GovernableAction`, and for batch settlement everybody writes the
-same one.
+The `ensure` clause requires the settlement's executors to be exactly the
+governance party and the proposer, because `executeImpl` holds no other
+authority. It also requires non-empty legs and allocations, and unique
+transfer leg ids.
 
-The part that is easy to get wrong is not the governance. It is the
-**authority arithmetic**, and it bites late:
+## Limits
 
-Token Standard V2 settles a batch only with the authority of every party in
-the settlement's `executors` — `SettlementFactory_SettleBatch` is
-controlled by its `actors`, and the standard's default implementation
-requires `actors` to equal the `executors`. So the governance party has to
-be named among the executors **when the allocations are created**, not when
-the settlement is attempted.
+**Contract ids are captured when the proposal is filed.** `factoryCid`,
+`allocationCids` and the ids inside `extraArgs` are fixed at that moment. If
+the registry replaces any of them before execution, the settlement fails and
+the proposer must file again. Keep action confirmation timeouts short.
 
-Get that wrong and nothing complains until the settle itself, with:
+**The factory is a contract id a member cannot judge.** `TransferLeg` carries
+only a text instrument id, so the proposal has nothing in it to bind
+`factoryCid` to. The standard's default settle checks every allocation's admin
+against the factory's, so the wrong factory is refused, but at execution rather
+than at filing.
 
-```text
-'actors' does not have the same elements as one of 'allowed actors'.
-actors: [proposer] allowed actors: [[proposer, governanceParty]]
-```
+**Execute through the API, not the Approvals tab.** The Execute button for
+custom proposals sends an empty `disclosed_contracts`, and this action needs
+the registry's rules contract disclosed. Use `POST /governance/execute` with
+`disclosed_contracts` populated.
 
-which points at the settlement and not at the allocation that caused it,
-hours or days earlier.
-
-This module encodes the arithmetic once, correctly, so that adopting
-multi-party authorisation for a batch is a matter of naming a party rather
-than of understanding the standard's authorisation model.
-
-## What you get
-
-- **No application code to strip out.** It depends only on
-  `governance-action-v1` and three Splice V2 API packages.
-- **The authority arithmetic is right by construction** — the proposal
-  carries the executors the settlement needs, and `executeImpl` runs with
-  the governance party's authority plus the proposer's, which is exactly
-  that set.
-- **The three properties are tested** on the IDE ledger, with no network
-  and no application: below threshold refused, proposer acting alone
-  refused, at threshold settled.
-- **LF 2.2**, matching `governance-action-v1`. The Splice V2 packages are
-  2.1 and a 2.2 package data-depends on them without trouble.
-
-## How to adopt it
-
-1. **When you allocate**, name the decentralised party among the
-   settlement's `executors`. This is the step that matters, and it happens
-   before any governance does.
-2. **The proposer files a `BatchSettlementProposal`.** The proposer is your
-   application's executor — a paying agent, a venue, a treasury. It must be
-   a member of the governance rules or an *additional proposer*; an
-   application service party usually wants the latter, so that it may
-   propose and never confirm.
-3. **The members confirm** through the Decentralization Manager, to
-   threshold.
-4. **Any member executes.** The engine exercises `GovernableAction_Execute`
-   and `executeImpl` performs the `SettleBatch`.
-
-Two things that are easy to miss:
-
-- The executing node runs `executeImpl`, so anything it touches that lives
-  on another participant must travel with the request as a **disclosed
-  contract** — typically the registry's rules contract and the sender's
-  locked holdings.
-- Every participant hosting a member must have **vetted every package the
-  settlement touches**, asset packages included. Package names resolve only
-  to a version vetted by every informee, so one node missing one package
-  fails the whole submission.
-
-## What it deliberately does not do
-
-- **It does not choose your asset.** Any V2 instrument; the module never
-  names one.
-- **It does not hide the run from the executor.** Executors are observers
-  on the allocations, by the standard's design. That is the trade an
-  application makes when it asks a committee to approve a payout, and it
-  should be stated in the application's own terms.
-- **It does not consume anything application-specific.** `executeImpl` is a
-  plain `SettleBatch`. If your application needs its own choice exercised —
-  a run consumed, a receipt written, records updated — write a proposal
-  whose `executeImpl` calls *that* choice, and use this module as the
-  pattern. That is the right way round: this one is the general case, and a
-  specific one is a forty-line template.
+**The executors see every leg**, because allocations list their executors as
+observers. That is a property of the standard, and an application asking a
+committee to approve a payout should say so in its own terms.
 
 ## Tests
 
-`BatchSettlementTest.daml` — three scripts, IDE ledger, no network:
-
-| Script | Expects |
-| --- | --- |
-| below threshold | the engine refuses |
-| proposer alone, outside the vote | the standard refuses the batch |
-| at threshold | settled; every leg paid |
+`governance-settlement-test` covers execution below threshold, execution by
+the proposer outside the vote, a settlement at threshold paying every
+receiver, and each `ensure` condition. It runs on the IDE ledger with no
+network.
