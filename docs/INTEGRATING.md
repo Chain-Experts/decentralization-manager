@@ -61,13 +61,29 @@ Those are the values `DECPM_CANTON_HMAC_AUDIENCE` and
 `DECPM_CANTON_HMAC_SECRET` default to, so an insecure-mode Decentralization
 Manager lines up with no further configuration.
 
-## 2. `auth-services` belongs on `ledger-api`, not `http-ledger-api`
+## 2. `auth-services` belongs on `ledger-api` only
 
 *Insecure setup only.*
 
-Adding the block to the JSON API section as well stops Canton booting. Worth
-stating explicitly, because a config file usually lists the two sections next
-to each other and it is a natural mistake.
+`http-ledger-api` has no `auth-services` key and no `max-token-lifetime`
+key. Adding either to that section does not weaken or duplicate anything - it
+stops the node starting, at config parse, before any component runs:
+
+```text
+GENERIC_CONFIG_ERROR(8,0): Cannot convert configuration to a config of class
+com.digitalasset.canton.config.CantonConfig. Failures are:
+  at 'canton.participants.<name>.http-ledger-api.auth-services':
+    - (canton.conf: 74) Unknown key.
+  at 'canton.participants.<name>.http-ledger-api.max-token-lifetime':
+    - (canton.conf: 73) Unknown key.
+Failed to read config at startup
+```
+
+Worth stating because a config file usually lists the two sections next to
+each other, and the JSON API is the one a browser talks to, so putting the
+auth settings there is a natural guess.
+
+Reproduced on Canton 3.5.8.
 
 ## 3. Canton needs `max-token-lifetime = Inf`, because the insecure token never expires
 
