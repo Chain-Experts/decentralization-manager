@@ -15,7 +15,7 @@ afterwards.
 > configured this way accepts any token signed with a public secret, so none
 > of it belongs on a real deployment.** For production, configure an identity
 > provider on the participant and point Decentralization Manager at the same
-> issuer — see [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md).
+> issuer. See [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md).
 >
 > Items 5 to 7 apply to any deployment.
 
@@ -116,7 +116,7 @@ This is what the Splice LocalNet bundle sets (`conf/canton/app.conf`).
 *Insecure setup only.*
 
 With `target-audience` set, Canton reads audience-based tokens and takes the
-user id from `sub` — so **the user must already exist**. Creating one from the
+user id from `sub`, so **the user must already exist**. Creating one from the
 bootstrap console needs a token the console does not have, which is a loop.
 
 Canton creates exactly one user for itself, `participant_admin`, with
@@ -147,7 +147,7 @@ failed package name resolution: splice-test-token-v2
 Package names resolve to a version vetted by **every** informee, so one node
 missing one package fails the whole submission. The error names the package
 but not the node, and it arrives at the settlement rather than at
-distribution — long after the step that caused it.
+distribution, long after the step that caused it.
 
 Worth a line in the DAR-distribution docs: send the transitive set that
 `executeImpl` reaches, not only the package the action is defined in.
@@ -160,7 +160,7 @@ party that can no longer govern itself.
 A party added as a member with no Decentralization Manager of its own still
 counts towards the threshold. With three members at a threshold of three, two
 confirmations were reachable and three were required, so **every** action was
-stuck — including the remove-member action that would have fixed it.
+stuck, including the remove-member action that would have fixed it.
 
 Two details make this sharper:
 
@@ -185,7 +185,7 @@ PUT /party-config   { dec_party_id, member_party_id: <original>, user_id, ... }
 > **This is recovery, not a routine step.** It works only where the node's
 > ledger user can act as the stranded member, and in that case **one operator
 > casts two of the party's confirmations**. That defeats the assumption the
-> threshold encodes — one operator per member — and while the procedure runs,
+> threshold encodes, one operator per member, and while the procedure runs,
 > the party's decisions are not what its rules describe. Use it to escape a
 > deadlock, record that it was used, and remove the stranded member
 > immediately afterwards.
@@ -207,7 +207,7 @@ empty `disclosed_contracts` and the click fails:
 CONTRACT_NOT_FOUND(11): Contract could not be found with id 00bf0947...
 ```
 
-The id in the message is the contract that should have been disclosed — a
+The id in the message is the contract that should have been disclosed: a
 registry's rules contract, for example. Nothing in the error mentions
 disclosure, so it reads as a missing contract rather than a missing
 parameter.
