@@ -5,8 +5,7 @@
 placeholder action, `disclosed_contracts`, granting propose-only rights. It
 assumes Decentralization Manager is already talking to a participant.
 
-This page is about getting to that point, and about the things that bite
-afterwards.
+This page covers how to reach that point, and the problems that appear later.
 
 > **Items 1 to 4 apply to a local, insecure setup only.** They describe the
 > handshake between Canton's `unsafe-jwt-hmac-256` auth service and the token
@@ -149,18 +148,14 @@ missing one package fails the whole submission. The error names the package
 but not the node, and it arrives at the settlement rather than at
 distribution, long after the step that caused it.
 
-Worth a line in the DAR-distribution docs: send the transitive set that
-`executeImpl` reaches, not only the package the action is defined in.
-
 ## 6. A member with no node can lock the party out of its own rules
 
 Adding a governance member is a single dialog, and its failure mode is a
 party that can no longer govern itself.
 
-A party added as a member with no Decentralization Manager of its own still
-counts towards the threshold. With three members at a threshold of three, two
-confirmations were reachable and three were required, so **every** action was
-stuck, including the remove-member action that would have fixed it.
+A member that cannot confirm still counts towards the threshold. If the other
+members cannot reach the threshold without it, no action can execute,
+including the action that removes it.
 
 Two details make this sharper:
 
@@ -190,9 +185,6 @@ PUT /party-config   { dec_party_id, member_party_id: <original>, user_id, ... }
 > deadlock, record that it was used, and remove the stranded member
 > immediately afterwards.
 
-A warning in the add-member dialog would prevent the situation entirely: **a
-member that cannot confirm still counts towards the threshold.**
-
 ## 7. The Execute button for custom proposals sends no disclosed contracts
 
 This is specific to custom actions filed with `proposal_cid`. The standard
@@ -212,14 +204,8 @@ registry's rules contract, for example. Nothing in the error mentions
 disclosure, so it reads as a missing contract rather than a missing
 parameter.
 
-Offering a paste field would not be a practical fix: a single blob commonly
-runs to several hundred or several thousand characters, and the number of
-them grows with the action's inputs.
-
 So for a custom proposal of this kind, **execute over
-`POST /governance/execute` rather than from the Approvals tab**. Saying so
-beside the button, or disabling it for actions whose `executeImpl` needs a
-choice context, would save the diagnosis.
+`POST /governance/execute` rather than from the Approvals tab**.
 
 The failure is harmless: the proposal and its confirmations survive, and a
 subsequent API execute succeeds.
