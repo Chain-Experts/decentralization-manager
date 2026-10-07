@@ -1,4 +1,4 @@
--- Copyright (c) 2026 Chain-Experts and/or its affiliates. All rights reserved.
+-- Copyright (c) 2026 DLC-Link, Inc. and/or its affiliates. All rights reserved.
 -- SPDX-License-Identifier: Apache-2.0
 
 -- | Tests for the BatchSettlementProposal governable action.
@@ -9,6 +9,8 @@
 -- exactly the governance party and the proposer, because executeImpl holds
 -- no other authority.
 module Governance.Settlement.Test.BatchSettlementTest where
+
+import DA.Optional (isNone)
 
 import Daml.Script
 
@@ -27,6 +29,14 @@ import TestHarness
 -- ============================================================================
 -- Fixtures
 -- ============================================================================
+
+-- | What a settlement should have changed: the receivers credited, the sender
+-- debited, and the proposal consumed.
+data SettledOutcome = SettledOutcome
+  with
+    receiverBalances : [Decimal]
+    proposerBalance : Decimal
+    proposalArchived : Bool
 
 data SettlementFixture = SettlementFixture
   with
@@ -100,32 +110,38 @@ allocateBothSides parties cash settlement transferLegs = do
       _ -> fail "receipt allocation did not complete"
   pure (sendCid :: receiptCids)
 
--- | File a proposal over the fixture's batch, overriding one field at a time.
+-- | The proposal over the fixture's batch, with one field overridden at a time.
+proposalOver : SettlementFixture -> V2.SettlementInfo -> [V2.TransferLeg] -> [ContractId V2.Allocation] -> BatchSettlementProposal
+proposalOver f settlement transferLegs allocationCids = BatchSettlementProposal with
+  governanceParty = f.parties.governanceParty
+  proposer = f.parties.proposer
+  factoryCid = toInterfaceContractId f.cash.rulesCid
+  settlement
+  transferLegs
+  allocationCids
+  extraArgs = f.cash.extraArgs
+  label = "BatchSettlement"
+  description = "Three legs, 600.0 in total"
+
 fileProposal : SettlementFixture -> V2.SettlementInfo -> [V2.TransferLeg] -> [ContractId V2.Allocation] -> Script (ContractId BatchSettlementProposal)
 fileProposal f settlement transferLegs allocationCids =
-  submit f.parties.proposer $ createCmd BatchSettlementProposal with
-    governanceParty = f.parties.governanceParty
-    proposer = f.parties.proposer
-    factoryCid = toInterfaceContractId f.cash.rulesCid
-    settlement
-    transferLegs
-    allocationCids
-    extraArgs = f.cash.extraArgs
-    label = "BatchSettlement"
-    description = "Three legs, 600.0 in total"
+  submit f.parties.proposer $ createCmd (proposalOver f settlement transferLegs allocationCids)
 
 fileProposalMustFail : SettlementFixture -> V2.SettlementInfo -> [V2.TransferLeg] -> [ContractId V2.Allocation] -> Script ()
 fileProposalMustFail f settlement transferLegs allocationCids =
-  submitMustFail f.parties.proposer $ createCmd BatchSettlementProposal with
-    governanceParty = f.parties.governanceParty
-    proposer = f.parties.proposer
-    factoryCid = toInterfaceContractId f.cash.rulesCid
-    settlement
-    transferLegs
-    allocationCids
-    extraArgs = f.cash.extraArgs
-    label = "BatchSettlement"
-    description = "Three legs, 600.0 in total"
+  submitMustFail f.parties.proposer $ createCmd (proposalOver f settlement transferLegs allocationCids)
+
+-- | The submission a real caller makes: the executing member acting as itself,
+-- reading the governance party, and carrying the disclosures the engine needs.
+--
+-- Both the below-threshold and the at-threshold test use this, so the number
+-- of confirmations is the only difference between them. An earlier version
+-- differed in two ways, and the below-threshold test then failed on a missing
+-- disclosure whichever way the threshold check went.
+executeAs : SettlementFixture -> Party -> Script SubmitOptions
+executeAs f member = do
+  disclosures <- executeDisclosures f.cash f.parties.proposer
+  pure (actAs member <> readAs f.parties.governanceParty <> mconcat (map disclose disclosures))
 
 -- ============================================================================
 -- Given
@@ -152,7 +168,8 @@ when_one_confirmation_then_execute f = do
   let actionCid : ContractId GovernableAction = toInterfaceContractId proposalCid
   confirmationCids <- submitConfirmations f.parties.governanceParty f.rulesCid actionCid
     [f.parties.member1]
-  submitMustFail (memberContext f.parties.member1 f.parties.governanceParty) $
+  options <- executeAs f f.parties.member1
+  submitMustFail options $
     exerciseCmd f.rulesCid GovernanceRules_ExecuteConfirmedAction with
       executor = f.parties.member1
       actionProposalCid = actionCid
@@ -168,21 +185,25 @@ when_proposer_executes_directly f = do
   submitMustFail (actAs f.parties.proposer <> disclose f.cash.rules) $
     exerciseCmd actionCid GovernableAction_Execute
 
-when_threshold_reached_then_execute : SettlementFixture -> Script [Decimal]
+when_threshold_reached_then_execute : SettlementFixture -> Script SettledOutcome
 when_threshold_reached_then_execute f = do
   proposalCid <- fileProposal f f.settlement f.transferLegs f.allocationCids
   let actionCid : ContractId GovernableAction = toInterfaceContractId proposalCid
   confirmationCids <- submitConfirmations f.parties.governanceParty f.rulesCid actionCid
     [f.parties.member1, f.parties.member2]
-  _ <- submit (actAs f.parties.member1
-        <> readAs f.parties.governanceParty
-        <> readAs f.parties.proposer
-        <> disclose f.cash.rules) $
+  options <- executeAs f f.parties.member1
+  _ <- submit options $
     exerciseCmd f.rulesCid GovernanceRules_ExecuteConfirmedAction with
       executor = f.parties.member1
       actionProposalCid = actionCid
       confirmations = confirmationCids
-  forA [f.parties.receiver1, f.parties.receiver2, f.parties.receiver3] (balance f.cash)
+  receiverBalances <- forA [f.parties.receiver1, f.parties.receiver2, f.parties.receiver3] (balance f.cash)
+  proposerBalance <- balance f.cash f.parties.proposer
+  stillThere <- queryContractId f.parties.proposer proposalCid
+  pure SettledOutcome with
+    receiverBalances
+    proposerBalance
+    proposalArchived = isNone stillThere
 
 when_governance_party_not_an_executor : SettlementFixture -> Script ()
 when_governance_party_not_an_executor f =
@@ -217,9 +238,16 @@ when_no_allocations f = fileProposalMustFail f f.settlement f.transferLegs []
 then_nothing_to_verify : SettlementFixture -> () -> Script Failures
 then_nothing_to_verify _ _ = pure []
 
-then_receivers_paid : SettlementFixture -> [Decimal] -> Script Failures
-then_receivers_paid _ balances =
-  pure $ shouldBe "receiver balances after settlement" [100.0, 200.0, 300.0] balances
+-- | The money left the sender, reached the receivers, and the proposal is gone.
+-- The debit matters as much as the credits: without it the test would pass if
+-- the cash had come from somewhere other than the proposer.
+then_receivers_paid : SettlementFixture -> SettledOutcome -> Script Failures
+then_receivers_paid _ o =
+  pure $ concat
+    [ shouldBe "receiver balances after settlement" [100.0, 200.0, 300.0] o.receiverBalances
+    , shouldBe "proposer debited by the total" 9400.0 o.proposerBalance
+    , shouldBe "the proposal is archived" True o.proposalArchived
+    ]
 
 -- ============================================================================
 -- Tests

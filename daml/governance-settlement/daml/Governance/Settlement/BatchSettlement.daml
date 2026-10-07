@@ -1,4 +1,4 @@
--- Copyright (c) 2026 Chain-Experts and/or its affiliates. All rights reserved.
+-- Copyright (c) 2026 DLC-Link, Inc. and/or its affiliates. All rights reserved.
 -- SPDX-License-Identifier: Apache-2.0
 
 -- | Governable action to settle a Token Standard V2 batch.
@@ -9,12 +9,10 @@
 -- allocation time therefore makes every settlement of that batch require a
 -- threshold of its members.
 --
--- Authority flows through the exercise chain: GovernanceRules →
--- GovernableAction_Execute → executeImpl → SettlementFactory_SettleBatch.
--- That chain carries the governance party's authority and the proposer's,
--- and no other. The `ensure` clause therefore restricts the settlement's
--- executors to exactly those two parties: a third executor would pass the
--- vote and fail at execution.
+-- Authority passes along the exercise chain: GovernanceRules →
+-- GovernableAction_Execute → executeImpl → SettlementFactory_SettleBatch. That
+-- chain carries the governance party's authority and the proposer's, and no
+-- other, which is what the `ensure` clause below enforces.
 --
 -- Contract ID capture:
 -- `factoryCid`, `allocationCids` and the contract ids inside `extraArgs` are

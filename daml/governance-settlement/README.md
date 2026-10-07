@@ -15,9 +15,9 @@ settlement's executors. An application that names a governance party among
 the executors when it allocates has made every settlement of that batch
 require a threshold of that party's members.
 
-`BatchSettlementProposal` carries the batch through the vote. Authority flows
-GovernanceRules to GovernableAction_Execute to executeImpl to
-SettlementFactory_SettleBatch.
+`BatchSettlementProposal` carries the batch through the vote. Authority passes
+along the exercise chain: `GovernanceRules` to `GovernableAction_Execute` to
+`executeImpl` to `SettlementFactory_SettleBatch`.
 
 ## Using it
 

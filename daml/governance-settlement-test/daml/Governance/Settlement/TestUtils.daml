@@ -1,4 +1,4 @@
--- Copyright (c) 2026 Chain-Experts and/or its affiliates. All rights reserved.
+-- Copyright (c) 2026 DLC-Link, Inc. and/or its affiliates. All rights reserved.
 -- SPDX-License-Identifier: Apache-2.0
 
 -- | Test parties, governance rules and a Token Standard V2 cash instrument
@@ -9,8 +9,8 @@
 -- are read through the Holding interface.
 module Governance.Settlement.TestUtils where
 
-import DA.Optional (isNone)
-import DA.Set as Set hiding (filter)
+import DA.Optional (isNone, isSome)
+import DA.Set qualified as Set
 import DA.TextMap qualified as TextMap
 import DA.Time (addRelTime, minutes)
 
@@ -22,6 +22,7 @@ import Splice.Api.Token.AllocationV2 qualified as V2
 import Splice.Api.Token.TransferInstructionV2 qualified as V2
 import Splice.TokenStandard.Utils (basicAccount, receiverSide, senderSide, toAnyContractId)
 import Splice.Testing.Tokens.TestTokenV2 qualified as TestTokenV2
+import Splice.Testing.Tokens.TestTokenV2.Holding qualified as TestTokenV2Holding
 import Splice.Testing.Tokens.TestTokenV2.Util (tokenRulesContextKey)
 
 import Governance.Action (GovernableAction)
@@ -58,7 +59,7 @@ allocateSettlementTestParties = do
   outsider <- allocateParty "Outsider"
   pure SettlementTestParties with ..
 
-getMembers : SettlementTestParties -> Set Party
+getMembers : SettlementTestParties -> Set.Set Party
 getMembers parties = Set.fromList [parties.member1, parties.member2, parties.member3]
 
 -- | Submission context for a member, with readAs on the governance party.
@@ -159,6 +160,31 @@ unlockedHoldingCids : Cash -> Party -> Script [ContractId V2.Holding]
 unlockedHoldingCids cash p = do
   hs <- holdings cash p
   pure [ cid | (cid, v) <- hs, isNone v.lock ]
+
+-- | What a caller must send with the execute, and why the request takes it.
+--
+-- `executeImpl` reaches the registry's rules contract and the sender's locked
+-- holdings. A member's node hosts neither: the sender is an application party
+-- on another participant. So they travel with the request, which is what
+-- `disclosed_contracts` carries on `POST /governance/execute`.
+-- The query is on the concrete `Token`, not on the `Holding` interface,
+-- because `queryDisclosure` needs a template contract id.
+executeDisclosures : Cash -> Party -> Script [Disclosure]
+executeDisclosures cash sender = do
+  tokens <- query @TestTokenV2Holding.Token sender
+  let lockedCids =
+        [ cid
+        | (cid, t) <- tokens
+        , t.holding.account == basicAccount sender
+        , t.holding.instrumentId == cash.instrument
+        , isSome t.holding.lock
+        ]
+  locked <- forA lockedCids $ \cid -> do
+    d <- queryDisclosure sender cid
+    case d of
+      Some disclosure -> pure disclosure
+      None -> fail "a locked holding could not be disclosed"
+  pure (cash.rules :: locked)
 
 -- | The sender's side: one allocation funding every leg, committed, so the
 -- sender cannot withdraw it and race the settlement.
