@@ -46,10 +46,21 @@ only a text instrument id, so the proposal has nothing in it to bind
 against the factory's, so the wrong factory is refused, but at execution rather
 than at filing.
 
-**Execute through the API, not the Approvals tab.** The Execute button for
-custom proposals sends an empty `disclosed_contracts`, and this action needs
-the registry's rules contract disclosed. Use `POST /governance/execute` with
-`disclosed_contracts` populated.
+**Execute a domain action through the API, not from its card.** A custom
+`GovernableAction` such as this one appears in Approvals as a **domain**
+action, and that card's Execute sends an empty `disclosed_contracts`
+(`NotificationsView.tsx`, `DomainActionCard`). This action needs the
+registry's rules contract disclosed, so use `POST /governance/execute` with
+`disclosed_contracts` populated. The `ExecuteDialog` that does collect
+disclosures belongs to the other card, for self and standard actions.
+
+**One finalization shape, deliberately.** Every allocation is settled with
+`extraTransferLegSides = []` and `nextIterationFunding = None`. V2 models both
+per `FinalizedAllocation`, so a batch needing either cannot use this action as
+written. Widening it means carrying `[V2.FinalizedAllocation]` in the proposal
+instead of `[ContractId V2.Allocation]`; that is a small change and a
+deliberate omission rather than an oversight, because it would put the
+construction of those records on every caller for a case most do not have.
 
 **The executors see every leg**, because allocations list their executors as
 observers. That is a property of the standard, and an application asking a
@@ -59,5 +70,9 @@ committee to approve a payout should say so in its own terms.
 
 `governance-settlement-test` covers execution below threshold, execution by
 the proposer outside the vote, a settlement at threshold paying every
-receiver, and each `ensure` condition. It runs on the IDE ledger with no
-network.
+receiver, and each of the three `ensure` conjuncts: the governance party
+missing from the executors, the proposer missing from them, and a third party
+present among them. It runs on the IDE ledger with no network.
+
+Each refusal test is the passing case with exactly one value changed, so it
+can only fail for the condition it names.

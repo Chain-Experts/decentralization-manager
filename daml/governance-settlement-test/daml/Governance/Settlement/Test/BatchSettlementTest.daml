@@ -209,6 +209,19 @@ when_governance_party_not_an_executor : SettlementFixture -> Script ()
 when_governance_party_not_an_executor f =
   fileProposalMustFail f (settlementFor [f.parties.proposer]) f.transferLegs f.allocationCids
 
+-- | The mirror of the case above, and the third `ensure` conjunct.
+--
+-- `executeImpl` runs with the governance party's authority and the proposer's
+-- together, so a settlement naming only the governance party is one this
+-- action could never execute, and it is refused at creation rather than after
+-- the members have voted on it.
+--
+-- Exactly one value differs from the passing case, so the test can only fail
+-- for the conjunct it names.
+when_proposer_not_an_executor : SettlementFixture -> Script ()
+when_proposer_not_an_executor f =
+  fileProposalMustFail f (settlementFor [f.parties.governanceParty]) f.transferLegs f.allocationCids
+
 -- | executeImpl holds only the governance party's and the proposer's
 -- authority, so a third executor must be refused at creation rather than
 -- after the members have voted on it.
@@ -275,6 +288,12 @@ test_when_governance_party_not_an_executor_then_proposal_rejected = script do
   run Test with
     given = given_governance_with_allocated_batch
     when = when_governance_party_not_an_executor
+    then_ = then_nothing_to_verify
+
+test_when_proposer_not_an_executor_then_proposal_rejected = script do
+  run Test with
+    given = given_governance_with_allocated_batch
+    when = when_proposer_not_an_executor
     then_ = then_nothing_to_verify
 
 test_when_extra_executor_then_proposal_rejected = script do

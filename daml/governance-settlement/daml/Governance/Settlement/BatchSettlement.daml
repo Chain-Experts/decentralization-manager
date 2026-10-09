@@ -24,6 +24,19 @@
 --
 -- Visibility: the executors see every leg of the batch, because allocations
 -- list their executors as observers.
+--
+-- Supported settlement subset, stated rather than implied:
+-- every allocation is finalized with `extraTransferLegSides = []` and
+-- `nextIterationFunding = None`. V2 models both per `FinalizedAllocation`, so
+-- a batch that needs either cannot use this action as written. The proposal
+-- carries `[ContractId V2.Allocation]` and builds the finalization itself,
+-- which keeps what the members approve equal to what executes while leaving
+-- callers nothing to construct for the common case.
+--
+-- Widening it is a small change: carry `[V2.FinalizedAllocation]` instead and
+-- pass the approved values straight through. It is deliberately not done here,
+-- because it would put that construction on every caller for a case most do
+-- not have, and because the approved value should stay the executed value.
 module Governance.Settlement.BatchSettlement where
 
 import DA.List (unique)
